@@ -918,21 +918,17 @@ async def leave_queue_handler(message: Message, state: FSMContext):
             await message.answer(get_text("no_active_chat", lang), 
                             reply_markup=get_main_menu(lang))                   
 
-
 @dp.message(F.text.in_([get_text("leave_chat_btn", "en"), get_text("leave_chat_btn", "tg"),
                       get_text("end_chat_btn", "en"), get_text("end_chat_btn", "tg"), get_text("end_chat_btn", "ru"), get_text("leave_chat_btn", "ru")]))
 async def leave_chat(message: Message, state: FSMContext):
     user_data = await state.get_data()
     lang = user_data.get("language", "en")
+    is_admin = message.from_user.id in ADMIN_IDS
     
     if message.chat.id in users_waiting_queue:
         users_waiting_queue.remove(message.chat.id)
-        if message.from_user.id in ADMIN_IDS:
-            await message.answer(get_text("left_queue", lang), 
-                            reply_markup=get_main_menu_for_admin(lang))
-        else:
-            await message.answer(get_text("left_queue", lang), 
-                            reply_markup=get_main_menu(lang))
+        reply_markup = get_main_menu_for_admin(lang) if is_admin else get_main_menu(lang)
+        await message.answer(get_text("left_queue", lang), reply_markup=reply_markup)
                     
     elif message.chat.id in active_chats:
         other_id = active_chats[message.chat.id]
@@ -940,33 +936,20 @@ async def leave_chat(message: Message, state: FSMContext):
         if other_id in active_chats:
             del active_chats[other_id]
         
-        if message.from_user.id in ADMIN_IDS:
-            await message.answer(get_text("chat_ended", lang), 
-                            reply_markup=get_main_menu_for_admin(lang))
-        else:
-            await message.answer(get_text("chat_ended", lang), 
-                            reply_markup=get_main_menu(lang))
+        reply_markup = get_main_menu_for_admin(lang) if is_admin else get_main_menu(lang)
+        await message.answer(get_text("chat_ended", lang), reply_markup=reply_markup)
 
-        if message.from_user.id in ADMIN_IDS:
-              await bot.send_message(
+        other_is_admin = other_id in ADMIN_IDS  
+        other_reply_markup = get_main_menu_for_admin(lang) if other_is_admin else get_main_menu(lang)
+        await bot.send_message(
             other_id,
             get_text("chat_ended", lang),
-            reply_markup=get_main_menu_for_admin(lang)
-        )
-        else:
-            await bot.send_message(
-            other_id,
-            get_text("chat_ended", lang),
-            reply_markup=get_main_menu(lang)
+            reply_markup=other_reply_markup
         )
                       
     else:
-        if message.from_user.id in ADMIN_IDS:
-            await message.answer(get_text("no_active_chat", lang), 
-                            reply_markup=get_main_menu_for_admin(lang))
-        else:
-            await message.answer(get_text("no_active_chat", lang), 
-                            reply_markup=get_main_menu(lang))        
+        reply_markup = get_main_menu_for_admin(lang) if is_admin else get_main_menu(lang)
+        await message.answer(get_text("no_active_chat", lang), reply_markup=reply_markup)      
 
 async def should_skip_ai_response(message: Message, state: FSMContext) -> bool:
     """Check if we should skip AI response for this message"""
