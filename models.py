@@ -1,8 +1,6 @@
-from sqlalchemy import Column, Integer , BigInteger , String,  DateTime
-from db import Base 
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Boolean
+from db import Base, engine
 from datetime import datetime
-
-
 
 class Student(Base):
     __tablename__ = 'new_students'    
@@ -24,6 +22,7 @@ class Admin(Base):
     id = Column(Integer, primary_key=True)
     admin_tg = Column(BigInteger, unique=True)
     username = Column(String(70), unique=True, nullable=False)
+    is_superadmin = Column(Boolean, default=False)
     last_activity = Column(DateTime)
 
 

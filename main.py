@@ -22,7 +22,7 @@ from aiogram.filters import StateFilter
 from course_data import *
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
-
+from sqlalchemy import or_
 
 
 load_dotenv()
@@ -322,8 +322,15 @@ async def join_course(message: Message, state: FSMContext):
     user_id = message.from_user.id
     is_admin = session.query(Admin).filter(Admin.admin_tg == user_id).first() is not None
     if is_admin:
-        inline_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
+        pass
+    elif not is_admin:
+        print(message.from_user.username)
+        student = session.query(Student).filter(Student.tg_id == message.from_user.id).first()
+        if student:
+            await message.answer(get_text("already_registered", lang, course_name=student.course_name),parse_mode='HTML')
+            return
+    inline_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{course['emoji']} {course[f'name_{lang}']}", 
                 callback_data=f"join_{course_id}"
@@ -331,12 +338,6 @@ async def join_course(message: Message, state: FSMContext):
             for course_id, course in courses_data.items()
         ]
     )
-    elif not is_admin:
-        student = session.query(Student).filter(Student.tg_id == message.from_user.id).first()
-        if student:
-            await message.answer(get_text("already_registered", lang, course_name=student.course_name),parse_mode='HTML')
-            return
-        
     await message.answer(get_text("choose_course", lang), reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("join_"))
@@ -424,7 +425,7 @@ async def get_parents_phone(message: Message, state: FSMContext):
     
     await message.answer(
         get_text("registration_success", lang, course_name=course[f"name_{lang}"]),
-        reply_markup=keyboard
+        reply_markup=keyboard,parse_mode='HTML'
     )
     await state.clear()
     await state.set_state(Wating.choosing_language)    
@@ -491,68 +492,73 @@ async def seeing_students(message: types.Message, state: FSMContext):
         await message.answer(get_text("unexpected_error", lang))
 
 
-
 @dp.message(F.text.in_([get_text("add_admin", "en"), get_text("add_admin", "tg"), get_text("add_admin", "ru")]))
 async def add_admin_command(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    lang = user_data.get("language", "en")
+    lang = (await state.get_data()).get("language", "en")
     
-    if not session.query(Admin).filter(Admin.admin_tg == message.from_user.id).first():
+    admin = session.query(Admin).filter(Admin.admin_tg == message.from_user.id).first()
+    if not admin or not admin.is_superadmin:
         await message.answer(get_text("admin_only_action", lang))
         return
     
-    await message.answer(get_text("enter_username_to_add", lang))
-    await state.set_state("waiting_for_admin_name")
+    # First ask for admin type
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=get_text("regular_admin", lang), callback_data="choose_admin_type:regular"),
+            InlineKeyboardButton(text=get_text("super_admin", lang), callback_data="choose_admin_type:super")
+        ]
+    ])
+    
+    await message.answer(get_text("select_admin_type", lang), reply_markup=keyboard)
+    await state.set_state("waiting_for_admin_type")
 
+@dp.callback_query(F.data.startswith("choose_admin_type:"), StateFilter("waiting_for_admin_type"))
+async def process_admin_type(callback: types.CallbackQuery, state: FSMContext):
+    admin_type = callback.data.split(':')[1]
+    lang = (await state.get_data()).get("language", "en")
+    
+    await state.update_data(admin_type=admin_type)
+    await callback.message.edit_text(get_text("enter_username_to_add", lang))
+    await state.set_state("waiting_for_admin_name")
+    await callback.answer()
 
 @dp.message(F.text, StateFilter("waiting_for_admin_name"))
 async def process_admin_name(message: types.Message, state: FSMContext):
     lang = (await state.get_data()).get("language", "en")
-    username = message.text.strip()
-    
-    kb = [
-        [KeyboardButton(text=get_text("tajik_btn", "tg"))],
-        [KeyboardButton(text=get_text("english_btn", "en")), 
-         KeyboardButton(text=get_text("russian_btn", "ru"))]
-    ]
-    keyboard = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
-    
-    if username.startswith('@'):
-        username = username[1:]
+    user_data = await state.get_data()
+    admin_type = user_data["admin_type"]
+    username = message.text.strip().lstrip('@')
     
     try:
-        try:
-            user_tg = int(username)
-            user = session.query(Users).filter(Users.user_tg == user_tg).first()
-        except ValueError:
+        # Try to find by user_tg if input is numeric
+        if username.isdigit():
+            user = session.query(Users).filter(Users.user_tg == int(username)).first()
+        else:
             user = session.query(Users).filter(Users.username == username).first()
-        
+
         if not user:
-            await message.answer(
-                get_text("user_not_found", lang),
-                reply_markup=keyboard
-            )
+            await message.answer(get_text("user_not_found", lang), reply_markup=get_lang_keyboard(lang))
             await state.clear()
             await state.set_state(Wating.choosing_language)
             return
-        
+            
+
         if session.query(Admin).filter(Admin.admin_tg == user.user_tg).first():
-            await message.answer(
-                get_text("user_already_admin", lang),
-                reply_markup=keyboard
-            )
+            await message.answer(get_text("user_already_admin", lang), reply_markup=get_lang_keyboard(lang))
             await state.clear()
             await state.set_state(Wating.choosing_language)
             return
-        
+
+        # Create new admin
         new_admin = Admin(
             admin_tg=user.user_tg,
             username=user.username,
+            is_superadmin=(admin_type == "super"),
             last_activity=datetime.now()
         )
         session.add(new_admin)
         session.commit()
-        
+
         try:
             await bot.send_message(
                 user.user_tg,
@@ -564,38 +570,53 @@ async def process_admin_name(message: types.Message, state: FSMContext):
             )
         except Exception as e:
             print(f"Couldn't notify new admin: {e}")
-        
+
+        # Confirm to current admin
         display_name = f"@{user.username}" if user.username else f"ID:{user.user_tg}"
+        admin_type_text = get_text(f"{admin_type}_admin", lang)
+        success_text = get_text("admin_added_success", lang)
+        success_text = success_text.replace("{display_name}", display_name)
+        success_text = success_text.replace("{admin_type}", admin_type_text)
         
-        await message.answer(
-            get_text("admin_added_success", lang).format(
-                display_name=display_name
-            ),
-            reply_markup=keyboard
-        )
-        print("Admin added successfully")
-        
+        await message.answer(success_text, reply_markup=get_lang_keyboard(lang))
+
     except Exception as e:
         session.rollback()
-        error_msg = get_text("admin_add_error", lang)
-        await message.answer(
-            error_msg,  
-            reply_markup=keyboard
-        )
         print(f"Error adding admin: {e}")
+        await message.answer(get_text("admin_add_error", lang), reply_markup=get_lang_keyboard(lang))
     finally:
-        await message.answer(get_text("choose_lang_after_add", lang), reply_markup=keyboard)
+        await message.answer(get_text("choose_lang_after_add", lang), reply_markup=get_lang_keyboard(lang))
         await state.clear()
         await state.set_state(Wating.choosing_language)
-    
-# Delete Admin with Inline Buttons
+
+async def clear_state(state: FSMContext):
+    lang = (await state.get_data()).get("language", "en")
+    await message.answer(get_text("choose_lang_after_add", lang), reply_markup=get_lang_keyboard(lang))
+    await state.clear()
+    await state.set_state(Wating.choosing_language)
+
+def get_lang_keyboard(lang: str):
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=get_text("tajik_btn", "tg"))],
+            [KeyboardButton(text=get_text("english_btn", "en")), KeyboardButton(text=get_text("russian_btn", "ru"))]
+        ],
+        resize_keyboard=True
+    )
+
 @dp.message(F.text.in_([get_text("delete_admin", "en"), get_text("delete_admin", "tg"), get_text("delete_admin", "ru")]))
 async def delete_admin_command(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     lang = user_data.get("language", "en")
     
     # Check if current user is admin
-    if not session.query(Admin).filter(Admin.admin_tg == message.from_user.id).first():
+    admin = session.query(Admin).filter(Admin.admin_tg == message.from_user.id).first()
+    if not admin:
+        await message.answer(get_text("admin_only_action", lang))
+        return
+    
+    # Only superadmins can add other admins
+    if not admin.is_superadmin:
         await message.answer(get_text("admin_only_action", lang))
         return
     
@@ -605,6 +626,7 @@ async def delete_admin_command(message: types.Message, state: FSMContext):
     if not admins:
         await message.answer(get_text("no_admins_to_delete", lang))
         return
+  
     
     # Create inline keyboard
     buttons = [
